@@ -91,5 +91,35 @@ class TodoistAbstractor(object):
 
         return items
 
+    def get_all_parents(self, task):
+        parents = [task]
+        if 'parent_id' in task.data and task.data['parent_id'] is not None:
+            parents.extend(self.get_all_parents(self.api.items.get_by_id(task.data['parent_id'])))
+        return parents
+
+
+    def get_all_children(self, task):
+        project_items = self.get_items(projects=[task['project_id']])
+        children = [task]
+
+        while True:
+            ids = [tsk['id'] for tsk in children]
+            ret = [tsk for tsk in project_items
+                   if (tsk['parent_id'] in ids and tsk not in children)]
+
+            # If we have found no more children, abort
+            if not ret:
+                break
+
+            children.extend(ret)
+
+        return children
+
 if __name__ == '__main__':
     td = TodoistAbstractor()
+    items = td.api.items.all()
+    item = [item for item in items if item['content'].find("mytestneu3") > -1][0]
+    print "Got task " + item['content']
+    children = td.get_all_children(item)
+    print "It has the children " + repr([tsk['content'] for tsk in children])
+

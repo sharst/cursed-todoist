@@ -11,13 +11,13 @@ from curses import wrapper
 import locale
 
 class Commands(object):
-    ADD = "ADD"
-    ADD_SUBTASK = "SUBTASK"
-    ADD_TASK_BELOW = "TASK BELOW"
-    SELECT = "SELECT"
-    COMPLETE = "COMPLETE"
-    GOTO_PROJECT = "GO TO PROJECT"
-    QUIT = "QUIT"
+    ADD = ("ADD", 1)
+    ADD_SUBTASK = ("SUBTASK", 2)
+    ADD_TASK_BELOW = ("TASK BELOW", 3)
+    SELECT = ("SELECT", 4)
+    COMPLETE = ("COMPLETE", 1)
+    GOTO_PROJECT = ("GO TO PROJECT", 2)
+    QUIT = ("QUIT", 1)
 
 class CursesUI(object):
     def __init__(self):
@@ -81,6 +81,7 @@ class CursesUI(object):
         self.optionbox.mvwin(height-2, width - (self.menu_width + 1))
 
     def execute_command(self, user_input, command):
+        command = command
         if command in [Commands.ADD,
                        Commands.ADD_SUBTASK,
                        Commands.ADD_TASK_BELOW]:
@@ -103,9 +104,17 @@ class CursesUI(object):
 
             elif command == Commands.ADD_TASK_BELOW:
                 if self.selected_task is not None:
+                    children = self.todo.get_all_children(self.selected_task)
+                    if len(children) > 1:
+                        self.log.info("{} has the children: {}".format(children[0]['content'],
+                                                                       [child['content'] for child in children[1:]]))
+                    else:
+                        self.log.info("{} has no children.".format(children[0]['content']))
+
+                    max_order = max([tsk['item_order'] for tsk in children])
                     self.todo.add_item(content,
                                        self.selected_task['project_id'],
-                                       item_order = self.selected_task['item_order'] + 1,
+                                       item_order = max_order + 1,
                                        indent = self.selected_task['indent'])
                     self.log.info("Added {}, order {}, indent {}".format(content,
                                                          self.selected_task['item_order'] + 1,
@@ -126,6 +135,8 @@ class CursesUI(object):
         elif command == Commands.QUIT:
             curses.endwin()
             sys.exit()
+
+        self.log.info("Executed command " + repr(command))
 
 
 
@@ -193,6 +204,7 @@ class CursesUI(object):
     def command_available(self, cmd):
         if not cmd in self.available_commands:
             self.available_commands.append(cmd)
+            self.available_commands = sorted(self.available_commands, key = lambda cmd: (cmd[1], cmd[0]))
 
     def command_unavailable(self, cmd):
         if cmd in self.available_commands:
@@ -203,7 +215,7 @@ class CursesUI(object):
 
         if len(self.available_commands):
             self.optionbox.addstr(1, 1,
-                                  self.available_commands[self.active_command % len(self.available_commands)],
+                                  self.available_commands[self.active_command % len(self.available_commands)][0],
                                   curses.A_STANDOUT)
 
         self.optionbox.refresh()
@@ -230,6 +242,7 @@ class CursesUI(object):
 
     def items_by_cmd(self, cmd):
         sel_proj = self.projects_by_cmd(cmd)
+
         if len(sel_proj):
             items = self.todo.get_items(projects=sel_proj)
         else:
@@ -241,7 +254,7 @@ class CursesUI(object):
         filt_items = []
         if len(clean_cmd) or len(sel_proj):
             for item in items:
-                if all([cmd in item.data['content'] for cmd in clean_cmd]):
+                if all([cmd.lower() in item.data['content'].lower() for cmd in clean_cmd]):
                     filt_items.append(item)
 
         return filt_items
@@ -286,10 +299,17 @@ class CursesUI(object):
 
         return True
 
-    def paint_item(self, y, x, item, standout=False):
+    def paint_item(self, y, x, item, standout=False, grayout=False):
         height, width = self.mainbox.getmaxyx()
+        indent = item['indent']
 
-        text = item['content'].encode('UTF-8')
+        text = item['content']
+        if indent > 1:
+            text = u"\u2937 " + text
+            indent -= 1
+
+        text = text.encode('UTF-8')
+
         if item['due_date_utc'] is not None:
             date = " ".join(item['due_date_utc'].split(' ')[1:5])
             date = datetime.datetime.strptime(date, "%d %b %Y %H:%M:%S")
@@ -299,26 +319,39 @@ class CursesUI(object):
                 date = date.strftime('  %d.%m.%Y %H:%M')
 
 
-            text = self.shorten_string(item['content'].encode('UTF-8'), width-item['indent']*2-len(date))
+            text = self.shorten_string(text, width-indent * 2 - len(date))
         else:
-            text = self.shorten_string(item['content'].encode('UTF-8'), width-item['indent']*2)
+            text = self.shorten_string(text, width-indent * 2)
             date = None
 
 
         if standout:
-            self.mainbox.addstr(y, x + item['indent'] * 2, text, curses.A_STANDOUT)
+            self.mainbox.addstr(y, x + indent * 2, text, curses.A_STANDOUT)
+        elif grayout:
+            self.mainbox.addstr(y, x + indent * 2, text, curses.A_DIM)
         else:
-            self.mainbox.addstr(y, x + item['indent'] * 2, text)
+            self.mainbox.addstr(y, x + indent * 2, text)
 
         if date is not None:
-            self.mainbox.addstr(y, x + item['indent'] * 2 + len(text), date, curses.A_DIM)
+            self.mainbox.addstr(y, x + indent * 2 + len(text), date, curses.A_DIM)
 
 
     def list_items(self, items):
+        items_w_parents = set([])
+        for item in items:
+            items_w_parents = items_w_parents.union(self.todo.get_all_parents(item))
+
+
         items = sorted(items,
                        key=lambda item: (item.data['project_id'],
                                          (item.data['item_order']
                                          if 'item_order' in item.data else 0)))
+
+        items_w_parents = sorted(items_w_parents,
+                                 key=lambda item: (item.data['project_id'],
+                                                  (item.data['item_order']
+                                                   if 'item_order' in item.data else 0)))
+
         self.mainbox.clear()
         height, width = self.mainbox.getmaxyx()
         max_row = height - 2
@@ -326,15 +359,18 @@ class CursesUI(object):
         # pages = int(ceil(row_num / max_row))
         # position = 1
         # page = 1
-        for i, item in enumerate(items):
+        for i, item in enumerate(items_w_parents):
             if i >= max_row:
                 break
 
             standout = False
-            if len(items) == 1:
+            grayout = False
+            if len(items) == 1 and item == items[0]:
                 standout = True
+            if item not in items:
+                grayout = True
 
-            self.paint_item(i+1, 0, item, standout=standout)
+            self.paint_item(i+1, 0, item, standout=standout, grayout=grayout)
 
 
     def list_contents(self, item_list, box):
